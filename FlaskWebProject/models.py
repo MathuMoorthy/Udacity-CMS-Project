@@ -1,18 +1,18 @@
-from datetime import datetime
-from FlaskWebProject import app, db, login
-from werkzeug.security import generate_password_hash, check_password_hash
-from flask_login import UserMixin
-from azure.storage.blob import BlockBlobService
+from azure.storage.blob import BlobServiceClient
+from flask import flash
 import string, random
 from werkzeug.utils import secure_filename
-from flask import flash
+from FlaskWebProject import app, db, login
 
-blob_container = app.config['BLOB_CONTAINER']
-blob_service = BlockBlobService(account_name=app.config['BLOB_ACCOUNT'], account_key=app.config['BLOB_STORAGE_KEY'])
+# --- Blob Storage setup ---
+blob_conn_str = f"DefaultEndpointsProtocol=https;AccountName={app.config['BLOB_ACCOUNT']};AccountKey={app.config['BLOB_STORAGE_KEY']};EndpointSuffix=core.windows.net"
+blob_service_client = BlobServiceClient.from_connection_string(blob_conn_str)
+container_client = blob_service_client.get_container_client(app.config['BLOB_CONTAINER'])
 
 def id_generator(size=32, chars=string.ascii_uppercase + string.digits):
     return ''.join(random.choice(chars) for _ in range(size))
 
+# --- Models ---
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
@@ -52,17 +52,25 @@ class Post(db.Model):
         self.user_id = userId
 
         if file:
-            filename = secure_filename(file.filename);
-            fileextension = filename.rsplit('.',1)[1];
-            Randomfilename = id_generator();
-            filename = Randomfilename + '.' + fileextension;
+            filename = secure_filename(file.filename)
+            ext = filename.rsplit('.', 1)[1]
+            random_filename = id_generator() + '.' + ext
+
             try:
-                blob_service.create_blob_from_stream(blob_container, filename, file)
-                if(self.image_path):
-                    blob_service.delete_blob(blob_container, self.image_path)
-            except Exception:
-                flash(Exception)
-            self.image_path =  filename
+                # Upload file to Azure Blob
+                blob_client = container_client.get_blob_client(random_filename)
+                blob_client.upload_blob(file, overwrite=True)
+
+                # Delete old image if exists
+                if self.image_path:
+                    old_blob_client = container_client.get_blob_client(self.image_path)
+                    old_blob_client.delete_blob()
+
+            except Exception as e:
+                flash(f"Blob storage error: {str(e)}")
+
+            self.image_path = random_filename
+
         if new:
             db.session.add(self)
         db.session.commit()
